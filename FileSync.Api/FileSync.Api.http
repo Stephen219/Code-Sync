@@ -1,0 +1,6 @@
+@FileSync.Api_HostAddress = http://localhost:5113
+
+GET {{FileSync.Api_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###

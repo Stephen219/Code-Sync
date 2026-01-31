@@ -1,0 +1,154 @@
+﻿@page "/drop/{Code}"
+@inject IDropService DropService
+
+@rendermode RenderMode.InteractiveServer
+<h3>Download Files</h3>
+
+@if (isLoading)
+{
+    <p>Loading...</p>
+}
+else if (drop == null)
+{
+    <div class="alert alert-warning">
+        Drop not found or expired.
+    </div>
+}
+else if (drop.HasPasscode && !passcodeVerified)
+{
+    <div class="mb-3">
+        <p>This drop is protected with a passcode.</p>
+        <div class="input-group">
+            <input type="password" class="form-control" @bind="enteredPasscode" placeholder="Enter passcode" />
+            <button class="btn btn-primary" @onclick="VerifyPasscode" disabled="@isVerifying">
+                @(isVerifying ? "Verifying..." : "Verify")
+            </button>
+        </div>
+        @if (passcodeError)
+        {
+            <small class="text-danger">Incorrect passcode.</small>
+        }
+    </div>
+}
+else
+{
+    @if (!string.IsNullOrEmpty(drop.Message))
+    {
+        <div class="alert alert-secondary">
+            <strong>Message:</strong> @drop.Message
+        </div>
+    }
+
+    <p>Expires: @drop.ExpiresAt.ToLocalTime().ToString("g")</p>
+    <p>Downloaded: @drop.DownloadCount times</p>
+
+    <h5>Files</h5>
+    @if (drop.Files.Any())
+    {
+        <ul class="list-group">
+            @foreach (var file in drop.Files)
+            {
+                <li class="list-group-item d-flex justify-content-between align-items-center">
+                    <span>@file.FileName (@FormatFileSize(file.FileSize))</span>
+                    <button class="btn btn-sm btn-primary" @onclick="() => DownloadFile(file)">
+                        Download
+                    </button>
+                </li>
+            }
+        </ul>
+    }
+    else
+    {
+        <p class="text-muted">No files in this drop.</p>
+    }
+}
+
+@if (!string.IsNullOrEmpty(error))
+{
+    <div class="alert alert-danger mt-3">@error</div>
+}
+
+@code {
+    [Parameter]
+    public string Code { get; set; } = "";
+
+    private DropDto? drop;
+    private string enteredPasscode = "";
+    private bool passcodeVerified = false;
+    private bool passcodeError = false;
+
+    private bool isLoading = true;
+    private bool isVerifying = false;
+    private string error = "";
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadDrop();
+    }
+
+    private async Task LoadDrop()
+    {
+        isLoading = true;
+        try
+        {
+            drop = await DropService.GetDropByCodeAsync(Code);
+
+            // Auto-verify if no passcode required
+            if (drop != null && !drop.HasPasscode)
+            {
+                passcodeVerified = true;
+            }
+        }
+        catch (Exception ex)
+        {
+            error = $"Failed to load: {ex.Message}";
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+
+    private async Task VerifyPasscode()
+    {
+        isVerifying = true;
+        passcodeError = false;
+
+        try
+        {
+            var result = await DropService.VerifyPasscodeAsync(Code, enteredPasscode);
+
+            if (result)
+            {
+                passcodeVerified = true;
+            }
+            else
+            {
+                passcodeError = true;
+            }
+        }
+        catch (Exception ex)
+        {
+            error = $"Failed to verify: {ex.Message}";
+        }
+        finally
+        {
+            isVerifying = false;
+        }
+    }
+
+    private async Task DownloadFile(DropFileDto file)
+    {
+        // Note: For actual file download, we'd need a controller endpoint
+        // This is simplified - in real app you'd use a download controller
+        error = $"Download started for {file.FileName}";
+    }
+
+    private string FormatFileSize(long bytes)
+    {
+        if (bytes < 1024) return $"{bytes} B";
+        if (bytes < 1024 * 1024) return $"{bytes / 1024} KB";
+        return $"{bytes / (1024 * 1024)} MB";
+    }
+}
+

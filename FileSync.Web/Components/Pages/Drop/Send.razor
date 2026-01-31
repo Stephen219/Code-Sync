@@ -1,0 +1,195 @@
+﻿
+
+@page "/drop/send"
+@inject IDropService _dropService
+@inject NavigationManager Navigation
+@rendermode RenderMode.InteractiveServer
+
+
+
+<h3>Send Files</h3>
+
+@if (createdDrop == null)
+{
+    <div class="mb-3">
+        <label class="form-label">Recipient Email (optional)</label>
+        <input type="email" class="form-control" @bind="recipientEmail" placeholder="recipient@email.com" />
+        <small class="text-muted">They'll receive a notification with the download link.</small>
+    </div>
+    
+    <div class="mb-3">
+        <label class="form-label">Passcode (optional)</label>
+        <input type="text" class="form-control" @bind="passcode" placeholder="Enter passcode" />
+        <small class="text-muted">Recipient will need this to download.</small>
+    </div>
+    
+    <div class="mb-3">
+        <label class="form-label">Message (optional)</label>
+        <textarea class="form-control" rows="3" @bind="message" placeholder="Add a message..."></textarea>
+    </div>
+    
+    <div class="mb-3">
+        <label class="form-label">Expires In</label>
+        <select class="form-select" @bind="expiresInDays">
+            <option value="1">1 day</option>
+            <option value="3">3 days</option>
+            <option value="7">7 days</option>
+        </select>
+    </div>
+    
+    <button class="btn btn-primary" @onclick="CreateDrop" disabled="@isCreating">
+        @(isCreating ? "Creating..." : "Create Drop")
+    </button>
+}
+else
+{
+    <div class="alert alert-info">
+        <p>Drop created! Now upload your files:</p>
+        <p><strong>Code:</strong> @createdDrop.Code</p>
+    </div>
+    
+    <div class="mb-3">
+        <h5>Files</h5>
+        @if (uploadedFiles.Any())
+        {
+            <ul class="list-group mb-2">
+                @foreach (var file in uploadedFiles)
+                {
+                    <li class="list-group-item d-flex justify-content-between align-items-center">
+                        @file.FileName
+                        <span class="badge bg-secondary">@FormatFileSize(file.FileSize)</span>
+                    </li>
+                }
+            </ul>
+        }
+        
+        <InputFile OnChange="UploadFile" class="form-control" multiple />
+        @if (isUploading)
+        {
+            <small class="text-muted">Uploading...</small>
+        }
+    </div>
+    
+    <button class="btn btn-success" @onclick="FinalizeDrop" disabled="@(!uploadedFiles.Any() || isFinalizing)">
+        @(isFinalizing ? "Sending..." : "Send Files")
+    </button>
+}
+
+@if (dropFinalized)
+{
+    <div class="alert alert-success mt-3">
+        <h4>Files Sent!</h4>
+        <p>Share this link:</p>
+        <code>@Navigation.BaseUri drop/@createdDrop?.Code</code>
+        <p class="mt-2">Expires: @createdDrop?.ExpiresAt.ToLocalTime().ToString("g")</p>
+    </div>
+}
+
+@if (!string.IsNullOrEmpty(error))
+{
+    <div class="alert alert-danger mt-3">@error</div>
+}
+
+@code {
+    private string recipientEmail = "";
+    private string passcode = "";
+    private string message = "";
+    private int expiresInDays = 3;
+    
+    private CreateDropResponse? createdDrop;
+    private List<DropFileDto> uploadedFiles = new();
+    
+    private bool isCreating = false;
+    private bool isUploading = false;
+    private bool isFinalizing = false;
+    private bool dropFinalized = false;
+    private string error = "";
+
+    private async Task CreateDrop()
+    {
+        isCreating = true;
+        error = "";
+        
+        try
+        {
+            var request = new CreateDropRequest
+            {
+                // RecipientEmails = string.IsNullOrWhiteSpace(recipientEmail) ? null : recipientEmail,]
+                RecipientEmails = string.IsNullOrWhiteSpace(recipientEmail) ? null : new List<string> { recipientEmail },
+                Passcode = string.IsNullOrWhiteSpace(passcode) ? null : passcode,
+                Message = string.IsNullOrWhiteSpace(message) ? null : message,
+                ExpiresInDays = expiresInDays
+            };
+            
+            createdDrop = await _dropService.CreateDropAsync(request);
+        }
+        catch (Exception ex)
+        {
+            error = $"Failed to create drop: {ex.Message}";
+        }
+        finally
+        {
+            isCreating = false;
+        }
+    }
+
+    private async Task UploadFile(InputFileChangeEventArgs e)
+    {
+        if (createdDrop == null) return;
+        
+        isUploading = true;
+        error = "";
+        
+        try
+        {
+            foreach (var file in e.GetMultipleFiles(10)) // Max 10 files
+            {
+                using var stream = file.OpenReadStream(maxAllowedSize: 50 * 1024 * 1024); // 50MB max
+                
+                var result = await _dropService.AddFileAsync(createdDrop.DropId, stream, file.Name, file.ContentType);
+                
+                if (result != null)
+                {
+                    uploadedFiles.Add(result);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            error = $"Failed to upload: {ex.Message}";
+        }
+        finally
+        {
+            isUploading = false;
+        }
+    }
+
+    private async Task FinalizeDrop()
+    {
+        if (createdDrop == null) return;
+        
+        isFinalizing = true;
+        error = "";
+        
+        try
+        {
+            await _dropService.FinalizeDropAsync(createdDrop.DropId);
+            dropFinalized = true;
+        }
+        catch (Exception ex)
+        {
+            error = $"Failed to send: {ex.Message}";
+        }
+        finally
+        {
+            isFinalizing = false;
+        }
+    }
+
+    private string FormatFileSize(long bytes)
+    {
+        if (bytes < 1024) return $"{bytes} B";
+        if (bytes < 1024 * 1024) return $"{bytes / 1024} KB";
+        return $"{bytes / (1024 * 1024)} MB";
+    }
+}

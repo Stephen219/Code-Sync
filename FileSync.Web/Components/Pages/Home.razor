@@ -1,0 +1,73 @@
+﻿@page "/"
+
+<h1>FileSync</h1>
+
+<p>Share files and text instantly.</p>
+
+<div class="row mt-4">
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-body">
+                <h5 class="card-title">Space</h5>
+                <p class="card-text">
+                    Create a shared space for real-time collaboration.
+                    Paste text, share files, work together.
+                </p>
+                <a href="space/create" class="btn btn-primary">Create Space</a>
+
+                <hr />
+
+                <p class="card-text">Or join an existing space:</p>
+                <div class="input-group">
+                    <input type="text" class="form-control" placeholder="Enter code (e.g. BLUE-TIGER-42)" @bind="spaceCode" />
+                    <button class="btn btn-outline-secondary" @onclick="JoinSpace">Join</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-body">
+                <h5 class="card-title">File Drop</h5>
+                <p class="card-text">
+                    Send files to someone. Upload files, get a link,
+                    share it. Optional passcode protection.
+                </p>
+                <a href="drop/send" class="btn btn-primary">Send Files</a>
+
+                <hr />
+
+                <p class="card-text">Or download files someone sent you:</p>
+                <div class="input-group">
+                    <input type="text" class="form-control" placeholder="Enter code (e.g. ABC123XYZ)" @bind="dropCode" />
+                    <button class="btn btn-outline-secondary" @onclick="OpenDrop">Download</button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+@code {
+    private string spaceCode = "";
+    private string dropCode = "";
+
+    [Inject]
+    private NavigationManager Navigation { get; set; } = default!;
+
+    private void JoinSpace()
+    {
+        if (!string.IsNullOrWhiteSpace(spaceCode))
+        {
+            Navigation.NavigateTo($"/space/{spaceCode}");
+        }
+    }
+
+    private void OpenDrop()
+    {
+        if (!string.IsNullOrWhiteSpace(dropCode))
+        {
+            Navigation.NavigateTo($"/drop/{dropCode}");
+        }
+    }
+}

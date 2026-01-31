@@ -1,0 +1,235 @@
+﻿@page "/space/{Code}"
+@inject ISpaceService _spaceService
+@inject NavigationManager Navigation
+@implements IAsyncDisposable
+@rendermode RenderMode.InteractiveServer
+
+@using Microsoft.AspNetCore.SignalR.Client
+
+<h3>Space: @Code</h3>
+
+@if (isLoading)
+{
+    <p>Loading space...</p>
+}
+else if (space == null)
+{
+    <div class="alert alert-warning">
+        Space not found or expired.
+    </div>
+}
+else
+{
+    <div class="mb-3">
+        <span class="badge bg-success">@connectedUsers users connected</span>
+        <span class="ms-2">Expires: @space.ExpiresAt.ToLocalTime().ToString("g")</span>
+    </div>
+
+    <div class="mb-3">
+        <label class="form-label">Shared Content</label>
+        <textarea class="form-control" rows="10"
+                  @bind="content"
+                  @bind:event="oninput"
+                  @onkeyup="OnContentChanged"></textarea>
+        @if (isSaving)
+        {
+            <small class="text-muted">Saving...</small>
+        }
+    </div>
+
+    <div class="mb-3">
+        <h5>Files</h5>
+        @if (space.Files.Any())
+        {
+            <ul class="list-group">
+                @foreach (var file in space.Files)
+                {
+                    <li class="list-group-item d-flex justify-content-between align-items-center">
+                        @file.FileName
+                        <span class="badge bg-secondary">@FormatFileSize(file.FileSize)</span>
+                    </li>
+                }
+            </ul>
+        }
+        else
+        {
+            <p class="text-muted">No files yet.</p>
+        }
+
+        <div class="mt-2">
+            <InputFile OnChange="UploadFile" class="form-control" />
+            @if (isUploading)
+            {
+                <small class="text-muted">Uploading...</small>
+            }
+        </div>
+    </div>
+}
+
+@if (!string.IsNullOrEmpty(error))
+{
+    <div class="alert alert-danger mt-3">@error</div>
+}
+
+@code {
+    [Parameter]
+    public string Code { get; set; } = "";
+
+    private SpaceDto? space;
+    private string content = "";
+    private bool isLoading = true;
+    private bool isSaving = false;
+    private bool isUploading = false;
+    private string error = "";
+    private int connectedUsers = 1;
+
+    private HubConnection? hubConnection;
+    private System.Timers.Timer? debounceTimer;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadSpace();
+        await SetupSignalR();
+    }
+
+    private async Task SetupSignalR()
+    {
+        hubConnection = new HubConnectionBuilder()
+            .WithUrl(Navigation.ToAbsoluteUri("/spacehub"))
+            .WithAutomaticReconnect()
+            .Build();
+
+        // Receive content updates from others
+        hubConnection.On<string>("ReceiveContent", (newContent) =>
+        {
+            content = newContent;
+            InvokeAsync(StateHasChanged);
+        });
+
+        // Receive file added notification
+        hubConnection.On<string>("ReceiveFileAdded", async (fileName) =>
+        {
+            await LoadSpace();
+            await InvokeAsync(StateHasChanged);
+        });
+
+        await hubConnection.StartAsync();
+        await hubConnection.SendAsync("JoinSpace", Code);
+    }
+
+    private async Task LoadSpace()
+    {
+        isLoading = true;
+        try
+        {
+            space = await _spaceService.GetSpaceByCodeAsync(Code);
+            if (space != null)
+            {
+                content = space.Content;
+            }
+        }
+        catch (Exception ex)
+        {
+            error = $"Failed to load space: {ex.Message}";
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+
+    private void OnContentChanged()
+    {
+        // Debounce: wait 500ms after user stops typing
+        debounceTimer?.Stop();
+        debounceTimer?.Dispose();
+
+        debounceTimer = new System.Timers.Timer(500);
+        debounceTimer.Elapsed += async (sender, e) =>
+        {
+            debounceTimer?.Stop();
+            await SaveAndBroadcast();
+        };
+        debounceTimer.AutoReset = false;
+        debounceTimer.Start();
+    }
+
+    private async Task SaveAndBroadcast()
+    {
+        if (space == null || hubConnection == null) return;
+
+        isSaving = true;
+        await InvokeAsync(StateHasChanged);
+
+        try
+        {
+            // Save to database
+            await _spaceService.UpdateContentAsync(Code, content);
+
+            // Broadcast to others
+            await hubConnection.SendAsync("UpdateContent", Code, content);
+        }
+        catch (Exception ex)
+        {
+            error = $"Failed to save: {ex.Message}";
+        }
+        finally
+        {
+            isSaving = false;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private async Task UploadFile(InputFileChangeEventArgs e)
+    {
+        if (space == null) return;
+
+        isUploading = true;
+        error = "";
+
+        try
+        {
+            var file = e.File;
+            using var stream = file.OpenReadStream(maxAllowedSize: 50 * 1024 * 1024);
+
+            var result = await _spaceService.AddFileAsync(Code, stream, file.Name, file.ContentType);
+
+            if (result != null)
+            {
+                await LoadSpace();
+
+                // Notify others
+                if (hubConnection != null)
+                {
+                    await hubConnection.SendAsync("FileAdded", Code, file.Name);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            error = $"Failed to upload: {ex.Message}";
+        }
+        finally
+        {
+            isUploading = false;
+        }
+    }
+
+    private string FormatFileSize(long bytes)
+    {
+        if (bytes < 1024) return $"{bytes} B";
+        if (bytes < 1024 * 1024) return $"{bytes / 1024} KB";
+        return $"{bytes / (1024 * 1024)} MB";
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        debounceTimer?.Dispose();
+
+        if (hubConnection != null)
+        {
+            await hubConnection.SendAsync("LeaveSpace", Code);
+            await hubConnection.DisposeAsync();
+        }
+    }
+}

@@ -52,3 +52,15 @@ CodeCoverage/
 *.VisualState.xml
 TestResult.xml
 nunit-*.xml
+./.idea
+./.vs
+
+./.vs
+./vs
+./*Migrations
+
+/qodana.yaml
+/.idea/
+/FileSync.Infrastructure/Migrations/
+
+

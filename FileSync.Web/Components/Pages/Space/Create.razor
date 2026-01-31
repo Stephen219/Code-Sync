@@ -1,0 +1,67 @@
+﻿
+
+
+@page "/space/create"
+@inject ISpaceService _spaceService
+@inject NavigationManager Navigation
+@rendermode RenderMode.InteractiveServer
+
+<h3>Create Space</h3>
+
+@if (isLoading)
+{
+    <p>Creating space...</p>
+}
+else if (createdSpace != null)
+{
+    <div class="alert alert-success">
+        <h4>Space Created!</h4>
+        <p>Share this code with others:</p>
+        <h2 class="text-primary">@createdSpace.Code</h2>
+        <p>Expires: @createdSpace.ExpiresAt.ToLocalTime().ToString("g")</p>
+        <button class="btn btn-primary" @onclick="GoToSpace">Open Space</button>
+    </div>
+}
+else
+{
+    <p>Create a shared space for real-time text and file sharing.</p>
+    <button class="btn btn-primary" @onclick="CreateSpace">Create Space</button>
+}
+
+@if (!string.IsNullOrEmpty(error))
+{
+    <div class="alert alert-danger mt-3">@error</div>
+}
+
+@code {
+    private bool isLoading = false;
+    private CreateSpaceResponse? createdSpace;
+    private string error = "";
+
+    private async Task CreateSpace()
+    {
+        isLoading = true;
+        error = "";
+        
+        try
+        {
+            createdSpace = await _spaceService.CreateSpaceAsync();
+        }
+        catch (Exception ex)
+        {
+            error = $"Failed to create space: {ex.Message}";
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+    
+    private void GoToSpace()
+    {
+        if (createdSpace != null)
+        {
+            Navigation.NavigateTo($"/space/{createdSpace.Code}");
+        }
+    }
+}
