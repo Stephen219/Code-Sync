@@ -2,9 +2,8 @@ name: Architecture Review
 
 on:
   schedule:
-    # Every 30 min for testing — change to '0 6 * * 1' (weekly Monday 6am) later
-    - cron: '58 15 * * *'
-  workflow_dispatch: # Manual trigger from Actions tab
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -24,7 +23,7 @@ jobs:
             echo ""
 
             echo "## 1. PROJECT STRUCTURE"
-            find . -type f -name "*.cs" -o -name "*.csproj" -o -name "*.json" -o -name "*.md" | \
+            find . -type f \( -name "*.cs" -o -name "*.csproj" -o -name "*.json" -o -name "*.md" \) | \
               grep -v '/obj/' | grep -v '/bin/' | grep -v '/.vs/' | grep -v '/node_modules/' | sort
             echo ""
 
@@ -53,7 +52,7 @@ jobs:
                 cat "$f"
               else
                 head -150 "$f"
-                echo "... (truncated — $LINES total lines) ..."
+                echo "... (truncated - $LINES total lines) ..."
                 tail -100 "$f"
               fi
               echo ""
@@ -67,7 +66,7 @@ jobs:
             done
 
             echo "## 6. CONFIGURATION FILES"
-            for cfg in $(find . -name "appsettings*.json" -o -name "Program.cs" -o -name "Startup.cs" | \
+            for cfg in $(find . \( -name "appsettings*.json" -o -name "Program.cs" -o -name "Startup.cs" \) | \
               grep -v '/obj/' | grep -v '/bin/' | sort); do
               echo "### CONFIG: $cfg"
               cat "$cfg"
@@ -75,9 +74,12 @@ jobs:
             done
 
             echo "## 7. QUICK METRICS"
-            echo "Total .cs files: $(find . -name '*.cs' | grep -v obj | grep -v bin | wc -l)"
-            echo "Total C# lines: $(find . -name '*.cs' | grep -v obj | grep -v bin | xargs wc -l 2>/dev/null | tail -1 | awk '{print $1}')"
-            echo "Projects: $(find . -name '*.csproj' | wc -l)"
+            CS_COUNT=$(find . -name '*.cs' | grep -v obj | grep -v bin | wc -l)
+            CS_LINES=$(find . -name '*.cs' | grep -v obj | grep -v bin | xargs wc -l 2>/dev/null | tail -1 | awk '{print $1}')
+            PROJ_COUNT=$(find . -name '*.csproj' | wc -l)
+            echo "Total .cs files: $CS_COUNT"
+            echo "Total C# lines: $CS_LINES"
+            echo "Projects: $PROJ_COUNT"
 
           } > /tmp/context.txt
 
@@ -87,53 +89,61 @@ jobs:
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
-          PROMPT=$(cat .github/prompts/review-prompt.md)
-          CONTEXT=$(cat /tmp/context.txt)
+          python3 << 'PYEOF'
+          import json, os, urllib.request, urllib.error, sys
 
-          FULL_MESSAGE="${PROMPT}
+          api_key = os.environ["ANTHROPIC_API_KEY"]
 
-          ${CONTEXT}"
+          with open(".github/prompts/review-prompt.md") as f:
+              prompt = f.read()
+          with open("/tmp/context.txt") as f:
+              context = f.read()
 
-          # Escape for JSON
-          ESCAPED=$(python3 -c "
-          import sys, json
-          print(json.dumps(sys.stdin.read()))
-          " <<< "$FULL_MESSAGE")
+          full_message = f"{prompt}\n\n{context}"
 
-          # Call Claude API
-          RESPONSE=$(curl -s "https://api.anthropic.com/v1/messages" \
-            -H "Content-Type: application/json" \
-            -H "x-api-key: ${ANTHROPIC_API_KEY}" \
-            -H "anthropic-version: 2023-06-01" \
-            -d "{
-              \"model\": \"claude-sonnet-4-20250514\",
-              \"max_tokens\": 8096,
-              \"messages\": [{
-                \"role\": \"user\",
-                \"content\": ${ESCAPED}
-              }]
-            }")
+          payload = json.dumps({
+              "model": "claude-sonnet-4-20250514",
+              "max_tokens": 8096,
+              "messages": [{"role": "user", "content": full_message}]
+          }).encode("utf-8")
 
-          # Extract text
-          python3 -c "
-          import json, sys
-          data = json.loads('''${RESPONSE}'''.replace(\"'''\", \"\\\\'''\"))
-          " 2>/dev/null || true
+          req = urllib.request.Request(
+              "https://api.anthropic.com/v1/messages",
+              data=payload,
+              headers={
+                  "Content-Type": "application/json",
+                  "x-api-key": api_key,
+                  "anthropic-version": "2023-06-01",
+              },
+              method="POST",
+          )
 
-          # Safer extraction
-          echo "$RESPONSE" > /tmp/raw-response.json
-          python3 << 'PYEOF' > /tmp/review.json
-          import json
-          with open("/tmp/raw-response.json") as f:
-              data = json.load(f)
-          for block in data.get("content", []):
-              if block.get("type") == "text":
-                  print(block["text"])
+          print(f"Sending {len(full_message)} chars to Claude API...")
+          sys.stdout.flush()
+
+          try:
+              with urllib.request.urlopen(req, timeout=120) as resp:
+                  data = json.loads(resp.read().decode())
+          except urllib.error.HTTPError as e:
+              body = e.read().decode()
+              print(f"ERROR: Claude API returned HTTP {e.code}")
+              print(body)
+              sys.exit(1)
+          except Exception as e:
+              print(f"ERROR: {e}")
+              sys.exit(1)
+
+          text_parts = [b["text"] for b in data.get("content", []) if b.get("type") == "text"]
+          result = "\n".join(text_parts)
+
+          with open("/tmp/review.json", "w") as f:
+              f.write(result)
+
+          print(f"Review complete: {len(result)} chars")
+          print(f"Tokens: {data.get('usage', {})}")
           PYEOF
 
-          echo "Review complete: $(wc -c < /tmp/review.json) bytes"
-
-      - name: Create GitHub Issue with findings
+      - name: Create GitHub Issue
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -145,113 +155,113 @@ jobs:
           with open("/tmp/review.json") as f:
               raw = f.read()
 
-          # Try to extract JSON from response
-          json_match = re.search(r'```json\s*(.*?)\s*```', raw, re.DOTALL)
-          if json_match:
-              try:
-                  data = json.loads(json_match.group(1))
-              except:
-                  data = None
-          else:
-              try:
-                  data = json.loads(raw)
-              except:
-                  data = None
+          data = None
+
+          # Try: JSON in code fence
+          m = re.search(r'```json\s*(.*?)\s*```', raw, re.DOTALL)
+          if m:
+              try: data = json.loads(m.group(1))
+              except: pass
+
+          # Try: raw JSON
+          if not data:
+              try: data = json.loads(raw)
+              except: pass
+
+          # Try: first { to last }
+          if not data:
+              s, e = raw.find('{'), raw.rfind('}')
+              if s != -1 and e != -1:
+                  try: data = json.loads(raw[s:e+1])
+                  except: pass
 
           if data:
-              body = f"## Architecture Review — Overall Health: {data.get('overallHealth', 'unknown').upper()}\n\n"
+              health = data.get('overallHealth', 'unknown').upper()
+              icon = {"GREEN": "🟢", "YELLOW": "🟡", "RED": "🔴"}.get(health, "⚪")
+              body = f"## {icon} Architecture Review — Health: {health}\n\n"
               body += f"{data.get('summary', '')}\n\n"
 
-              # What's working well
-              positives = data.get('positives', [])
-              if positives:
-                  body += "## What's working well\n"
-                  for p in positives:
-                      body += f"- {p}\n"
+              for p in data.get('positives', []):
+                  body += f"- ✅ {p}\n"
+              if data.get('positives'):
                   body += "\n"
 
-              # Findings
-              findings = data.get('findings', [])
-              if findings:
-                  body += "## Findings\n\n"
-                  for f in findings:
-                      sev_icon = {"critical": "🔴", "warning": "🟡", "info": "🔵"}.get(f.get("severity",""), "⚪")
-                      body += f"### {sev_icon} {f.get('id', '')} — {f.get('title', '')}\n"
-                      body += f"**Severity:** {f.get('severity', '')} | **Effort:** {f.get('estimatedEffort', '')}\n\n"
-                      body += f"{f.get('description', '')}\n\n"
-                      files = f.get('affectedFiles', [])
-                      if files:
-                          body += f"**Files:** {', '.join(files)}\n\n"
-                      body += f"**Suggestion:** {f.get('suggestion', '')}\n\n"
-                      ac = f.get('acceptanceCriteria', [])
-                      if ac:
-                          body += "**Acceptance criteria:**\n"
-                          for c in ac:
-                              body += f"- [ ] {c}\n"
-                      dod = f.get('definitionOfDone', [])
-                      if dod:
-                          body += "**Definition of done:**\n"
-                          for d in dod:
-                              body += f"- [ ] {d}\n"
-                      body += "\n---\n\n"
+              for f in data.get('findings', []):
+                  si = {"critical":"🔴","warning":"🟡","info":"🔵"}.get(f.get("severity",""),"⚪")
+                  body += f"### {si} {f.get('id','')} — {f.get('title','')}\n\n"
+                  body += f"**Severity:** {f.get('severity','')} | **Effort:** {f.get('estimatedEffort','')}\n\n"
+                  body += f"{f.get('description','')}\n\n"
+                  for af in f.get('affectedFiles', []):
+                      body += f"- `{af}`\n"
+                  if f.get('affectedFiles'): body += "\n"
+                  body += f"**Suggestion:** {f.get('suggestion','')}\n\n"
+                  for c in f.get('acceptanceCriteria', []):
+                      body += f"- [ ] {c}\n"
+                  if f.get('acceptanceCriteria'): body += "\n"
+                  for d in f.get('definitionOfDone', []):
+                      body += f"- [ ] {d}\n"
+                  if f.get('definitionOfDone'): body += "\n"
+                  body += "---\n\n"
 
-              # User stories
-              stories = data.get('userStories', [])
-              if stories:
-                  body += "## User Stories\n\n"
-                  for s in stories:
-                      body += f"### 📋 {s.get('title', '')}\n"
-                      body += f"{s.get('description', '')}\n\n"
-                      body += f"**Points:** {s.get('storyPoints', 'TBD')} | **Priority:** {s.get('priority', 'TBD')}\n\n"
-                      ac = s.get('acceptanceCriteria', [])
-                      if ac:
-                          body += "**Acceptance criteria:**\n"
-                          for c in ac:
-                              body += f"- [ ] {c}\n"
-                      dod = s.get('definitionOfDone', [])
-                      if dod:
-                          body += "\n**Definition of done:**\n"
-                          for d in dod:
-                              body += f"- [ ] {d}\n"
-                      body += "\n---\n\n"
+              if data.get('userStories'):
+                  body += "## 📋 User Stories\n\n"
+                  for s in data['userStories']:
+                      body += f"### {s.get('title','')}\n\n"
+                      body += f"{s.get('description','')}\n\n"
+                      body += f"**Points:** {s.get('storyPoints','?')} | **Priority:** {s.get('priority','?')}\n\n"
+                      for c in s.get('acceptanceCriteria', []):
+                          body += f"- [ ] {c}\n"
+                      if s.get('acceptanceCriteria'): body += "\n"
+                      for d in s.get('definitionOfDone', []):
+                          body += f"- [ ] {d}\n"
+                      if s.get('definitionOfDone'): body += "\n"
+                      body += "---\n\n"
 
-              # Sprint plan
               sprint = data.get('sprintPlan', {})
               if sprint:
-                  body += "## Suggested Sprint Plan\n\n"
+                  body += "## 🏃 Sprint Plan\n\n"
                   for phase, items in sprint.items():
                       body += f"**{phase}:**\n"
-                      for item in items:
+                      for item in (items if isinstance(items, list) else [items]):
                           body += f"- {item}\n"
                       body += "\n"
 
-              body += "\n\n---\n*Auto-generated by Claude architecture review*"
+              body += "\n---\n*Auto-generated by Claude architecture review*\n"
           else:
-              # Fallback: just dump the raw text
-              body = f"## Architecture Review\n\n{raw}\n\n---\n*Auto-generated by Claude architecture review*"
+              body = f"## Architecture Review\n\n⚠️ *Raw output (JSON parse failed):*\n\n{raw}\n"
 
-          with open("/tmp/issue-body.md", "w") as out:
-              out.write(body)
+          print(body)
           PYEOF
 
-          # Close previous auto-review issues to avoid duplicates
-          gh issue list --repo "$GITHUB_REPOSITORY" --label "auto-review" --state open --json number -q '.[].number' | \
-            while read -r num; do
-              gh issue close "$num" --repo "$GITHUB_REPOSITORY" --comment "Closing: superseded by new review run." 2>/dev/null || true
-            done
+          # Close previous review issues
+          gh issue list --repo "$GITHUB_REPOSITORY" --label "auto-review" --state open \
+            --json number -q '.[].number' 2>/dev/null | while read -r num; do
+            gh issue close "$num" --repo "$GITHUB_REPOSITORY" \
+              --comment "Superseded by new review." 2>/dev/null || true
+          done
 
-          # Create the new issue
+          # Create issue (with fallback for oversized bodies)
           gh issue create \
             --repo "$GITHUB_REPOSITORY" \
             --title "🏗️ Architecture Review — ${DATE}" \
             --body-file /tmp/issue-body.md \
-            --label "auto-review"
+            --label "auto-review" || {
+              echo "Body too large, truncating..."
+              head -c 60000 /tmp/issue-body.md > /tmp/issue-truncated.md
+              gh issue create \
+                --repo "$GITHUB_REPOSITORY" \
+                --title "🏗️ Architecture Review — ${DATE}" \
+                --body-file /tmp/issue-truncated.md \
+                --label "auto-review"
+            }
 
-      - name: Upload raw review as artifact
+      - name: Upload artifacts
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: review-${{ github.run_number }}
           path: |
             /tmp/context.txt
             /tmp/review.json
+            /tmp/issue-body.md
           retention-days: 30
