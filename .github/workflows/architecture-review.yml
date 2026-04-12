@@ -23,7 +23,7 @@ jobs:
             echo ""
 
             echo "## 1. PROJECT STRUCTURE"
-            find . -type f \( -name "*.cs" -o -name "*.csproj" -o -name "*.json" -o -name "*.md" \) | \
+           find . -type f \( -name "*.cs" -o -name "*.csproj" -o -name "*.json" -o -name "*.md" \) | \
               grep -v '/obj/' | grep -v '/bin/' | grep -v '/.vs/' | grep -v '/node_modules/' | sort
             echo ""
 
