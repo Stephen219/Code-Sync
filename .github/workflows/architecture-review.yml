@@ -3,7 +3,7 @@ name: Architecture Review
 on:
   schedule:
     # Every 30 min for testing — change to '0 6 * * 1' (weekly Monday 6am) later
-    - cron: '*/30 * * * *'
+    - cron: '58 15 * * *'
   workflow_dispatch: # Manual trigger from Actions tab
 
 permissions:
