@@ -17,73 +17,142 @@ jobs:
 
       - name: Collect codebase context
         run: |
-          {
-            echo "# CODE-SYNC / FILESYNC ARCHITECTURE REVIEW"
-            echo "Generated: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-            echo ""
+          python3 << 'PYEOF'
+          import os, glob
 
-            echo "## 1. PROJECT STRUCTURE"
-           find . -type f \( -name "*.cs" -o -name "*.csproj" -o -name "*.json" -o -name "*.md" \) | \
-              grep -v '/obj/' | grep -v '/bin/' | grep -v '/.vs/' | grep -v '/node_modules/' | sort
-            echo ""
+          out = []
+          out.append("# CODE-SYNC / FILESYNC ARCHITECTURE REVIEW")
+          out.append("")
 
-            echo "## 2. PROJECT REFERENCES (dependency direction)"
-            for csproj in $(find . -name "*.csproj" | sort); do
-              echo "### $csproj"
-              grep -E 'ProjectReference|PackageReference' "$csproj" 2>/dev/null || echo "(none)"
-              echo ""
-            done
+          # 1. Project structure
+          out.append("## 1. PROJECT STRUCTURE")
+          for root, dirs, files in os.walk("."):
+              dirs[:] = [d for d in dirs if d not in ("obj", "bin", ".vs", ".git", "node_modules")]
+              for f in sorted(files):
+                  if f.endswith((".cs", ".csproj", ".json", ".md")):
+                      out.append(os.path.join(root, f))
+          out.append("")
 
-            echo "## 3. DEPENDENCY VIOLATION SCAN"
-            echo "### Domain referencing outer layers (should be NONE):"
-            grep -rn "using FileSync.Application\|using FileSync.Infrastructure\|using FileSync.Api\|using FileSync.Web" \
-              FileSync.Domain/ 2>/dev/null || echo "CLEAN"
-            echo ""
-            echo "### Application referencing Infrastructure/Api/Web (should be NONE):"
-            grep -rn "using FileSync.Infrastructure\|using FileSync.Api\|using FileSync.Web" \
-              FileSync.Application/ 2>/dev/null || echo "CLEAN"
-            echo ""
+          # 2. Project references
+          out.append("## 2. PROJECT REFERENCES")
+          for root, dirs, files in os.walk("."):
+              dirs[:] = [d for d in dirs if d not in ("obj", "bin", ".vs", ".git")]
+              for f in files:
+                  if f.endswith(".csproj"):
+                      path = os.path.join(root, f)
+                      out.append(f"### {path}")
+                      with open(path) as fh:
+                          for line in fh:
+                              if "ProjectReference" in line or "PackageReference" in line:
+                                  out.append(line.strip())
+                      out.append("")
 
-            echo "## 4. ALL SOURCE FILES"
-            for f in $(find . -name "*.cs" -type f | grep -v '/obj/' | grep -v '/bin/' | grep -v '/.vs/' | sort); do
-              LINES=$(wc -l < "$f")
-              echo "### FILE: $f ($LINES lines)"
-              if [ "$LINES" -le 300 ]; then
-                cat "$f"
-              else
-                head -150 "$f"
-                echo "... (truncated - $LINES total lines) ..."
-                tail -100 "$f"
-              fi
-              echo ""
-            done
+          # 3. Dependency violations
+          out.append("## 3. DEPENDENCY VIOLATION SCAN")
+          violations = {
+              "FileSync.Domain": ["FileSync.Application", "FileSync.Infrastructure", "FileSync.Api", "FileSync.Web"],
+              "FileSync.Application": ["FileSync.Infrastructure", "FileSync.Api", "FileSync.Web"],
+          }
+          for layer, banned in violations.items():
+              out.append(f"### {layer} (should NOT reference: {', '.join(banned)})")
+              found = False
+              if os.path.isdir(layer):
+                  for root, dirs, files in os.walk(layer):
+                      dirs[:] = [d for d in dirs if d not in ("obj", "bin")]
+                      for f in files:
+                          if f.endswith(".cs"):
+                              filepath = os.path.join(root, f)
+                              with open(filepath, errors="replace") as fh:
+                                  for i, line in enumerate(fh, 1):
+                                      for b in banned:
+                                          if f"using {b}" in line:
+                                              out.append(f"  VIOLATION: {filepath}:{i} -> {line.strip()}")
+                                              found = True
+              if not found:
+                  out.append("  CLEAN")
+              out.append("")
 
-            echo "## 5. DOCUMENTATION"
-            for doc in $(find . -name "*.md" -type f | sort); do
-              echo "### DOC: $doc"
-              cat "$doc"
-              echo ""
-            done
+          # 4. All source files
+          out.append("## 4. SOURCE FILES")
+          for root, dirs, files in os.walk("."):
+              dirs[:] = [d for d in dirs if d not in ("obj", "bin", ".vs", ".git", "node_modules", "Migrations")]
+              for f in sorted(files):
+                  if f.endswith(".cs"):
+                      filepath = os.path.join(root, f)
+                      try:
+                          with open(filepath, errors="replace") as fh:
+                              content = fh.read()
+                          lines = content.splitlines()
+                          out.append(f"### FILE: {filepath} ({len(lines)} lines)")
+                          if len(lines) <= 300:
+                              out.append(content)
+                          else:
+                              out.append("\n".join(lines[:150]))
+                              out.append(f"... (truncated - {len(lines)} total) ...")
+                              out.append("\n".join(lines[-100:]))
+                          out.append("")
+                      except Exception as e:
+                          out.append(f"### FILE: {filepath} (ERROR: {e})")
+                          out.append("")
 
-            echo "## 6. CONFIGURATION FILES"
-            for cfg in $(find . \( -name "appsettings*.json" -o -name "Program.cs" -o -name "Startup.cs" \) | \
-              grep -v '/obj/' | grep -v '/bin/' | sort); do
-              echo "### CONFIG: $cfg"
-              cat "$cfg"
-              echo ""
-            done
+          # 5. Documentation
+          out.append("## 5. DOCUMENTATION")
+          for root, dirs, files in os.walk("."):
+              dirs[:] = [d for d in dirs if d not in ("obj", "bin", ".vs", ".git", "node_modules")]
+              for f in sorted(files):
+                  if f.endswith(".md"):
+                      filepath = os.path.join(root, f)
+                      try:
+                          with open(filepath, errors="replace") as fh:
+                              out.append(f"### DOC: {filepath}")
+                              out.append(fh.read())
+                              out.append("")
+                      except:
+                          pass
 
-            echo "## 7. QUICK METRICS"
-            CS_COUNT=$(find . -name '*.cs' | grep -v obj | grep -v bin | wc -l)
-            CS_LINES=$(find . -name '*.cs' | grep -v obj | grep -v bin | xargs wc -l 2>/dev/null | tail -1 | awk '{print $1}')
-            PROJ_COUNT=$(find . -name '*.csproj' | wc -l)
-            echo "Total .cs files: $CS_COUNT"
-            echo "Total C# lines: $CS_LINES"
-            echo "Projects: $PROJ_COUNT"
+          # 6. Config files
+          out.append("## 6. CONFIGURATION FILES")
+          for root, dirs, files in os.walk("."):
+              dirs[:] = [d for d in dirs if d not in ("obj", "bin", ".vs", ".git")]
+              for f in sorted(files):
+                  if f in ("Program.cs", "Startup.cs") or (f.startswith("appsettings") and f.endswith(".json")):
+                      filepath = os.path.join(root, f)
+                      try:
+                          with open(filepath, errors="replace") as fh:
+                              out.append(f"### CONFIG: {filepath}")
+                              out.append(fh.read())
+                              out.append("")
+                      except:
+                          pass
 
-          } > /tmp/context.txt
+          # 7. Metrics
+          cs_files = []
+          total_lines = 0
+          csproj_count = 0
+          for root, dirs, files in os.walk("."):
+              dirs[:] = [d for d in dirs if d not in ("obj", "bin", ".vs", ".git")]
+              for f in files:
+                  if f.endswith(".cs"):
+                      cs_files.append(os.path.join(root, f))
+                      try:
+                          with open(os.path.join(root, f), errors="replace") as fh:
+                              total_lines += sum(1 for _ in fh)
+                      except:
+                          pass
+                  if f.endswith(".csproj"):
+                      csproj_count += 1
 
-          echo "Collected $(wc -l < /tmp/context.txt) lines, $(wc -c < /tmp/context.txt) bytes"
+          out.append("## 7. METRICS")
+          out.append(f"Total .cs files: {len(cs_files)}")
+          out.append(f"Total C# lines: {total_lines}")
+          out.append(f"Projects: {csproj_count}")
+
+          result = "\n".join(out)
+          with open("/tmp/context.txt", "w") as f:
+              f.write(result)
+
+          print(f"Collected {len(cs_files)} files, {total_lines} lines, {len(result)} chars")
+          PYEOF
 
       - name: Run Claude review
         env:
@@ -92,19 +161,23 @@ jobs:
           python3 << 'PYEOF'
           import json, os, urllib.request, urllib.error, sys
 
-          api_key = os.environ["ANTHROPIC_API_KEY"]
+          api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+          if not api_key:
+              print("ERROR: ANTHROPIC_API_KEY secret is not set")
+              sys.exit(1)
 
           with open(".github/prompts/review-prompt.md") as f:
               prompt = f.read()
           with open("/tmp/context.txt") as f:
               context = f.read()
 
-          full_message = f"{prompt}\n\n{context}"
+          message = f"{prompt}\n\n{context}"
+          print(f"Sending {len(message)} chars to Claude...")
 
           payload = json.dumps({
               "model": "claude-sonnet-4-20250514",
               "max_tokens": 8096,
-              "messages": [{"role": "user", "content": full_message}]
+              "messages": [{"role": "user", "content": message}]
           }).encode("utf-8")
 
           req = urllib.request.Request(
@@ -115,40 +188,29 @@ jobs:
                   "x-api-key": api_key,
                   "anthropic-version": "2023-06-01",
               },
-              method="POST",
           )
 
-          print(f"Sending {len(full_message)} chars to Claude API...")
-          sys.stdout.flush()
-
           try:
-              with urllib.request.urlopen(req, timeout=120) as resp:
+              with urllib.request.urlopen(req, timeout=180) as resp:
                   data = json.loads(resp.read().decode())
           except urllib.error.HTTPError as e:
-              body = e.read().decode()
-              print(f"ERROR: Claude API returned HTTP {e.code}")
-              print(body)
+              print(f"HTTP {e.code}: {e.read().decode()}")
               sys.exit(1)
           except Exception as e:
-              print(f"ERROR: {e}")
+              print(f"Error: {e}")
               sys.exit(1)
 
-          text_parts = [b["text"] for b in data.get("content", []) if b.get("type") == "text"]
-          result = "\n".join(text_parts)
-
+          text = "\n".join(b["text"] for b in data.get("content", []) if b.get("type") == "text")
           with open("/tmp/review.json", "w") as f:
-              f.write(result)
+              f.write(text)
 
-          print(f"Review complete: {len(result)} chars")
-          print(f"Tokens: {data.get('usage', {})}")
+          print(f"Done: {len(text)} chars, tokens: {data.get('usage', {})}")
           PYEOF
 
       - name: Create GitHub Issue
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          DATE=$(date -u +%Y-%m-%d)
-
           python3 << 'PYEOF' > /tmp/issue-body.md
           import json, re
 
@@ -156,104 +218,95 @@ jobs:
               raw = f.read()
 
           data = None
+          for attempt in [
+              lambda: json.loads(re.search(r'```json\s*(.*?)\s*```', raw, re.DOTALL).group(1)),
+              lambda: json.loads(raw),
+              lambda: json.loads(raw[raw.find('{'):raw.rfind('}')+1]),
+          ]:
+              try:
+                  data = attempt()
+                  break
+              except:
+                  continue
 
-          # Try: JSON in code fence
-          m = re.search(r'```json\s*(.*?)\s*```', raw, re.DOTALL)
-          if m:
-              try: data = json.loads(m.group(1))
-              except: pass
-
-          # Try: raw JSON
           if not data:
-              try: data = json.loads(raw)
-              except: pass
+              print(f"## Architecture Review\n\n{raw}")
+              exit()
 
-          # Try: first { to last }
-          if not data:
-              s, e = raw.find('{'), raw.rfind('}')
-              if s != -1 and e != -1:
-                  try: data = json.loads(raw[s:e+1])
-                  except: pass
+          health = data.get('overallHealth', '?').upper()
+          icon = {"GREEN":"🟢","YELLOW":"🟡","RED":"🔴"}.get(health, "⚪")
+          print(f"## {icon} Architecture Review — {health}\n")
+          print(f"{data.get('summary','')}\n")
 
-          if data:
-              health = data.get('overallHealth', 'unknown').upper()
-              icon = {"GREEN": "🟢", "YELLOW": "🟡", "RED": "🔴"}.get(health, "⚪")
-              body = f"## {icon} Architecture Review — Health: {health}\n\n"
-              body += f"{data.get('summary', '')}\n\n"
+          if data.get('positives'):
+              print("## ✅ Positives\n")
+              for p in data['positives']:
+                  print(f"- {p}")
+              print()
 
-              for p in data.get('positives', []):
-                  body += f"- ✅ {p}\n"
-              if data.get('positives'):
-                  body += "\n"
-
-              for f in data.get('findings', []):
+          if data.get('findings'):
+              print("## 🔍 Findings\n")
+              for f in data['findings']:
                   si = {"critical":"🔴","warning":"🟡","info":"🔵"}.get(f.get("severity",""),"⚪")
-                  body += f"### {si} {f.get('id','')} — {f.get('title','')}\n\n"
-                  body += f"**Severity:** {f.get('severity','')} | **Effort:** {f.get('estimatedEffort','')}\n\n"
-                  body += f"{f.get('description','')}\n\n"
-                  for af in f.get('affectedFiles', []):
-                      body += f"- `{af}`\n"
-                  if f.get('affectedFiles'): body += "\n"
-                  body += f"**Suggestion:** {f.get('suggestion','')}\n\n"
-                  for c in f.get('acceptanceCriteria', []):
-                      body += f"- [ ] {c}\n"
-                  if f.get('acceptanceCriteria'): body += "\n"
-                  for d in f.get('definitionOfDone', []):
-                      body += f"- [ ] {d}\n"
-                  if f.get('definitionOfDone'): body += "\n"
-                  body += "---\n\n"
+                  print(f"### {si} {f.get('id','')} — {f.get('title','')}\n")
+                  print(f"**Severity:** {f.get('severity','')} | **Effort:** {f.get('estimatedEffort','')}\n")
+                  print(f"{f.get('description','')}\n")
+                  for a in f.get('affectedFiles', []):
+                      print(f"- `{a}`")
+                  if f.get('affectedFiles'): print()
+                  print(f"**Suggestion:** {f.get('suggestion','')}\n")
+                  if f.get('acceptanceCriteria'):
+                      print("**Acceptance criteria:**")
+                      for c in f['acceptanceCriteria']:
+                          print(f"- [ ] {c}")
+                      print()
+                  if f.get('definitionOfDone'):
+                      print("**Definition of done:**")
+                      for d in f['definitionOfDone']:
+                          print(f"- [ ] {d}")
+                      print()
+                  print("---\n")
 
-              if data.get('userStories'):
-                  body += "## 📋 User Stories\n\n"
-                  for s in data['userStories']:
-                      body += f"### {s.get('title','')}\n\n"
-                      body += f"{s.get('description','')}\n\n"
-                      body += f"**Points:** {s.get('storyPoints','?')} | **Priority:** {s.get('priority','?')}\n\n"
-                      for c in s.get('acceptanceCriteria', []):
-                          body += f"- [ ] {c}\n"
-                      if s.get('acceptanceCriteria'): body += "\n"
-                      for d in s.get('definitionOfDone', []):
-                          body += f"- [ ] {d}\n"
-                      if s.get('definitionOfDone'): body += "\n"
-                      body += "---\n\n"
+          if data.get('userStories'):
+              print("## 📋 User Stories\n")
+              for s in data['userStories']:
+                  print(f"### {s.get('title','')}\n")
+                  print(f"{s.get('description','')}\n")
+                  print(f"**Points:** {s.get('storyPoints','?')} | **Priority:** {s.get('priority','?')}\n")
+                  if s.get('acceptanceCriteria'):
+                      print("**Acceptance criteria:**")
+                      for c in s['acceptanceCriteria']:
+                          print(f"- [ ] {c}")
+                      print()
+                  if s.get('definitionOfDone'):
+                      print("**Definition of done:**")
+                      for d in s['definitionOfDone']:
+                          print(f"- [ ] {d}")
+                      print()
+                  print("---\n")
 
-              sprint = data.get('sprintPlan', {})
-              if sprint:
-                  body += "## 🏃 Sprint Plan\n\n"
-                  for phase, items in sprint.items():
-                      body += f"**{phase}:**\n"
-                      for item in (items if isinstance(items, list) else [items]):
-                          body += f"- {item}\n"
-                      body += "\n"
+          if data.get('sprintPlan'):
+              print("## 🏃 Sprint Plan\n")
+              for phase, items in data['sprintPlan'].items():
+                  print(f"**{phase}:**")
+                  for i in (items if isinstance(items, list) else [items]):
+                      print(f"- {i}")
+                  print()
 
-              body += "\n---\n*Auto-generated by Claude architecture review*\n"
-          else:
-              body = f"## Architecture Review\n\n⚠️ *Raw output (JSON parse failed):*\n\n{raw}\n"
-
-          print(body)
+          print("---\n*Auto-generated by Claude*")
           PYEOF
 
-          # Close previous review issues
-          gh issue list --repo "$GITHUB_REPOSITORY" --label "auto-review" --state open \
-            --json number -q '.[].number' 2>/dev/null | while read -r num; do
-            gh issue close "$num" --repo "$GITHUB_REPOSITORY" \
-              --comment "Superseded by new review." 2>/dev/null || true
-          done
+          DATE=$(date -u +%Y-%m-%d)
 
-          # Create issue (with fallback for oversized bodies)
+          # Close old review issues
+          gh issue list --label "auto-review" --state open --json number -q '.[].number' | \
+            while read -r n; do gh issue close "$n" --comment "Superseded." 2>/dev/null || true; done
+
+          # Create new issue
           gh issue create \
-            --repo "$GITHUB_REPOSITORY" \
             --title "🏗️ Architecture Review — ${DATE}" \
             --body-file /tmp/issue-body.md \
-            --label "auto-review" || {
-              echo "Body too large, truncating..."
-              head -c 60000 /tmp/issue-body.md > /tmp/issue-truncated.md
-              gh issue create \
-                --repo "$GITHUB_REPOSITORY" \
-                --title "🏗️ Architecture Review — ${DATE}" \
-                --body-file /tmp/issue-truncated.md \
-                --label "auto-review"
-            }
+            --label "auto-review"
 
       - name: Upload artifacts
         if: always()
